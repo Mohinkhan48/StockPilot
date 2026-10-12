@@ -121,8 +121,14 @@ else:
 _db_options = {
     'charset': 'utf8mb4',
 }
-if os.environ.get('DB_SSL_CA'):
-    _db_options['ssl'] = {'ca': os.environ['DB_SSL_CA']}
+_ca_path = os.environ.get('DB_SSL_CA')
+if not _ca_path and (os.environ.get('DB_SSL_MODE') or 'tidbcloud.com' in _db_host):
+    # Standard Linux CA certificate bundle (e.g. Render Ubuntu containers)
+    if os.path.exists('/etc/ssl/certs/ca-certificates.crt'):
+        _ca_path = '/etc/ssl/certs/ca-certificates.crt'
+
+if _ca_path:
+    _db_options['ssl'] = {'ca': _ca_path}
 elif os.environ.get('DB_SSL_MODE'):
     _db_options['ssl_mode'] = os.environ['DB_SSL_MODE']
 
