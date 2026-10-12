@@ -1,79 +1,236 @@
 # StockPilot — Multi-Tenant Inventory & Sales Order Management System
 
-StockPilot is a full-stack, enterprise-grade inventory and sales order management platform built with a **Django REST Framework (DRF)** backend, a **React 19 + TypeScript + Vite** frontend, and a **MySQL** relational database.
+StockPilot is an enterprise-grade, multi-tenant inventory and sales order management platform engineered with a **Django REST Framework (DRF)** backend, a **React 19 + TypeScript + Vite** frontend, and a **MySQL-compatible TiDB Cloud Serverless** relational database.
 
-The system is designed with strict multi-tenant workspace isolation, server-authoritative pricing, atomic database transactions with concurrency row-locking, append-only inventory movement audit logs, and role-based permissions (Workspace Owner vs. Staff).
+The platform provides strict tenant isolation, server-authoritative pricing, atomic database transactions with concurrency row-locking, append-only inventory movement audit logs, and fine-grained role-based access control (Workspace Owner vs. Staff).
+
+---
+
+## Live Deployment & Repository Links
+
+- **GitHub Repository**: [https://github.com/Mohinkhan48/StockPilot](https://github.com/Mohinkhan48/StockPilot)
+- **Live Frontend Application**: [https://stockpilot-mohin-app.netlify.app](https://stockpilot-mohin-app.netlify.app/)
+- **Live Backend API**: [https://stockpilot-49vs.onrender.com](https://stockpilot-49vs.onrender.com/)
+- **Database Engine**: [TiDB Cloud Serverless](https://tidbcloud.com/) (MySQL 8 wire-compatible, distributed SQL)
 
 ---
 
 ## Table of Contents
 
-- [Project Overview](#project-overview)
+- [Evaluator Access & Self-Registration Guide](#evaluator-access--self-registration-guide)
+- [Project Overview & Core Capabilities](#project-overview--core-capabilities)
 - [Architecture & Tech Stack](#architecture--tech-stack)
+- [Database Schema & Data Relationships](#database-schema--data-relationships)
 - [Multi-Tenant Workspace Isolation](#multi-tenant-workspace-isolation)
 - [Role-Based Access Control (RBAC)](#role-based-access-control-rbac)
-- [Inventory Transaction Strategy & Atomicity](#inventory-transaction-strategy--atomicity)
-- [Order Lifecycle & Pricing Integrity](#order-lifecycle--pricing-integrity)
+- [Inventory Transaction Strategy & Concurrency](#inventory-transaction-strategy--concurrency)
+- [Multi-Item Order Lifecycle & Pricing Integrity](#multi-item-order-lifecycle--pricing-integrity)
+- [Dashboard Metrics & Real-Time Aggregations](#dashboard-metrics--real-time-aggregations)
+- [API Endpoints Reference](#api-endpoints-reference)
 - [Environment Variables & Configuration](#environment-variables--configuration)
-- [Database Migrations & Fresh Initialization](#database-migrations--fresh-initialization)
+- [Database Migrations & TiDB Compatibility Notes](#database-migrations--tidb-compatibility-notes)
 - [Local Setup & Installation Instructions](#local-setup--installation-instructions)
-- [Production Deployment on Render](#production-deployment-on-render)
-- [API Endpoints Documentation](#api-endpoints-documentation)
-- [Automated Test Suite & Verification](#automated-test-suite--verification)
+- [Automated Test Suites & Verification](#automated-test-suites--verification)
+- [Production Deployment Architecture](#production-deployment-architecture)
+- [Known Limitations & Outstanding Issues](#known-limitations--outstanding-issues)
 - [AI Assistance Disclosure](#ai-assistance-disclosure)
-- [Submission & Deployment Readiness Status](#submission--deployment-readiness-status)
 
 ---
 
-## Project Overview
+## Evaluator Access & Self-Registration Guide
 
-Managing inventory and sales orders across distinct client accounts or business units requires absolute tenant segregation, zero data leakage, and rigorous mathematical and transactional consistency. StockPilot delivers:
+Assessors can immediately evaluate the full end-to-end functionality of StockPilot on the live production deployment without requiring pre-shared credentials.
 
-1. **Multi-Tenant Workspaces**: Users can create or belong to multiple isolated workspaces. Data in Workspace A is strictly partitioned from Workspace B.
-2. **Server-Authoritative Pricing**: The frontend never dictates prices or totals. Pricing snapshots remain decoupled until order confirmation.
-3. **Atomic Stock Control**: Order confirmations lock rows in ascending primary-key order to eliminate race conditions and deadlocks, ensuring that multi-item transactions commit entirely or abort with zero partial stock deductions.
-4. **Append-Only Audit Ledger**: Every inventory transition (restock, sale, adjustment, return) generates an immutable `InventoryMovement` log entry that can never be modified or deleted.
-5. **Real-Time Workspace Metrics**: Workspace dashboard statistics are calculated in single server-side SQL aggregate queries across all active catalog products rather than deriving numbers from a single paginated page.
+### Step-by-Step Evaluation Walkthrough:
+
+1. **Access the Application**:
+   - Open the live frontend at [https://stockpilot-mohin-app.netlify.app](https://stockpilot-mohin-app.netlify.app/).
+   - The root URL (`/`) presents the clean login portal.
+
+2. **Self-Registration**:
+   - Click **"Create account"** or navigate directly to `/register`.
+   - Complete the registration form with a unique username, email, and password.
+   - Upon registration, an authentication token is issued, and you are directed to the **Workspaces** dashboard.
+
+3. **Workspace Provisioning**:
+   - Click **"Create Workspace"** and assign a name (e.g., *Apex Logistics* or *Acme Retail*).
+   - The creating user is automatically assigned the **Owner** role for that workspace.
+
+4. **Product Catalog & Inventory Audit**:
+   - Navigate to **Products** and add catalog items with starting stock, prices, and low-stock alert thresholds.
+   - Test the **Restock** modal to increase inventory with optional audit notes.
+   - Test the **Adjust Stock** modal to perform manual balance corrections (mandatory reason required).
+   - Open **Audit Movements** to view the append-only ledger tracking every stock transition with before/after quantities and user attribution.
+
+5. **Multi-Item Sales Order Lifecycle**:
+   - Navigate to **Orders** and click **"New Order"**.
+   - Add multiple items. In **Pending** status, notice that live product prices calculate an *estimated total*, but **no stock is deducted** and line prices remain unfrozen.
+   - Click **"Confirm Order"**. The server acquires row-level locks, verifies stock availability across all line items, atomically deducts quantities, stamps permanent historical price snapshots, and logs `sale` audit records.
+   - Test order fulfillment by transitioning from **Confirmed** to **Completed**.
+   - Create a second order and test **Cancel Order**: notice that cancelling a confirmed order atomically restores inventory levels and logs `return` audit records.
+
+6. **Role-Based Access Testing (Owner vs. Staff)**:
+   - Register a second user account (e.g., in an incognito window).
+   - In your primary Owner workspace, navigate to **Members**, invite the second user by username, and assign the **Staff** role.
+   - Log in as the Staff user: verify that Staff can create products, restock items, and confirm orders, but are blocked with `403 Forbidden` if attempting to delete products, delete pending orders, or alter workspace settings.
+
+---
+
+## Project Overview & Core Capabilities
+
+StockPilot solves the critical data integrity, concurrency, and multi-tenancy challenges inherent in inventory and order fulfillment systems:
+
+1. **Strict Multi-Tenant Scoping**: Complete database and view-layer isolation ensuring that workspace data is never cross-accessible or enumerable.
+2. **Atomic Concurrency Control**: High-volume order confirmations lock product rows in consistent ascending primary-key order (`SELECT ... FOR UPDATE`), eliminating deadlocks and overselling race conditions.
+3. **Server-Authoritative Pricing**: Clients never dictate line item prices or order totals. Historical prices are stamped only upon confirmation, insulating historical accounting from subsequent product catalog modifications.
+4. **Append-Only Movement Ledger**: Every inventory alteration (restock, sale, manual adjustment, cancellation return) writes an immutable `InventoryMovement` log entry that can never be modified or deleted.
+5. **Real-Time SQL Aggregations**: Dashboard metrics are computed in single server-side aggregate database queries rather than deriving statistics client-side from paginated sets.
 
 ---
 
 ## Architecture & Tech Stack
 
-### Backend
-- **Framework**: Django 5.2.18
-- **API Engine**: Django REST Framework (DRF) 3.18.3
-- **WSGI Server**: Gunicorn 23.0.0 (production HTTP server on Render)
-- **Static Asset Serving**: WhiteNoise 6.8.2 (efficient production static file delivery)
-- **Authentication**: TokenAuthentication (`rest_framework.authtoken`) with session support
-- **CORS Support**: `django-cors-headers` 4.9.0
-- **Database Connectors**: `mysqlclient` 2.3.0 (native C client) with `PyMySQL` 1.1.1 pure-Python fallback
+```
+┌─────────────────────────────────────────────────────────────┐
+│                       Client Browser                        │
+│             React 19 + TypeScript + Vite SPA                │
+│             Hosted on Netlify (CDN Edge)                    │
+└──────────────────────────────┬──────────────────────────────┘
+                               │ HTTPS (REST / Auth Token)
+                               ▼
+┌─────────────────────────────────────────────────────────────┐
+│                 Django REST Framework API                   │
+│          Gunicorn WSGI + WhiteNoise Static Assets           │
+│             Hosted on Render Web Service                    │
+└──────────────────────────────┬──────────────────────────────┘
+                               │ MySQL 8 Protocol (TLS/SSL)
+                               ▼
+┌─────────────────────────────────────────────────────────────┐
+│                 TiDB Cloud Serverless                       │
+│        Distributed MySQL-Compatible SQL Database            │
+└─────────────────────────────────────────────────────────────┘
+```
 
-### Frontend
+### Backend Services
+- **Framework**: Django 5.2.18
+- **REST Engine**: Django REST Framework (DRF) 3.18.3
+- **WSGI Application Server**: Gunicorn 23.0.0
+- **Static Assets**: WhiteNoise 6.8.2
+- **Authentication**: TokenAuthentication (`rest_framework.authtoken`) with session backup
+- **CORS Management**: `django-cors-headers` 4.9.0
+- **Database Adapters**: `mysqlclient` 2.3.0 (native C client) with `PyMySQL` 1.1.1 fallback and `cryptography` 44.0.0
+
+### Frontend Application
 - **Framework**: React 19.2.8
 - **Build Tool**: Vite 8.3.4 (with `@vitejs/plugin-react`)
-- **Language**: TypeScript 6.0.2 (strict mode enabled)
+- **Language**: TypeScript ~6.0.2 (strict typing enforced)
 - **Routing**: React Router DOM 7.18.4
-- **HTTP Client**: Axios 1.20.0 (with request interceptors for token attachment)
-- **Icons**: Lucide React 1.55.0
-- **Styling**: Vanilla CSS design system (tokens, glassmorphism, responsive navigation)
+- **HTTP Client**: Axios 1.20.0 (interceptor-based token injection)
+- **UI & Icons**: Lucide React 1.55.0
+- **Styling**: Handcrafted CSS design system with CSS custom properties (dark/light contrast, glassmorphism, responsive data grids)
+- **Test Runner**: Vitest 5.0.4
 
-### Database
-- **Engine**: MySQL 8.x
-- **Character Set**: `utf8mb4` with `utf8mb4_unicode_ci`
-- **Application Database**: `stockpilot_app`
-- **Isolated Test Database**: `test_stockpilot_app` (managed automatically by Django test runner)
+### Database Engine
+- **Provider**: TiDB Cloud Serverless (Distributed MySQL 8 wire-compatible)
+- **Collation**: `utf8mb4` with `utf8mb4_unicode_ci`
+- **Port**: 4000 (TLS/SSL enforced)
+
+---
+
+## Database Schema & Data Relationships
+
+The entity model is designed with relational integrity, composite uniqueness constraints, and foreign key protection:
+
+```mermaid
+erDiagram
+    User ||--o{ WorkspaceMembership : "holds"
+    Workspace ||--o{ WorkspaceMembership : "has"
+    User ||--o{ Workspace : "owns"
+    Workspace ||--o{ Product : "contains"
+    Workspace ||--o{ Order : "scopes"
+    Product ||--o{ OrderItem : "referenced by"
+    Order ||--o{ OrderItem : "contains"
+    Product ||--o{ InventoryMovement : "tracks"
+    Order ||--o{ InventoryMovement : "originates"
+    User ||--o{ InventoryMovement : "performed by"
+    User ||--o{ Order : "created by"
+
+    Workspace {
+        int id PK
+        string name
+        int owner_id FK
+        datetime created_at
+    }
+
+    WorkspaceMembership {
+        int id PK
+        int workspace_id FK
+        int user_id FK
+        string role "owner | staff"
+        datetime joined_at
+    }
+
+    Product {
+        int id PK
+        int workspace_id FK
+        string name
+        string sku "unique per workspace"
+        decimal price "declared CHECK >= 0"
+        int stock_quantity "declared CHECK >= 0"
+        int low_stock_threshold "declared CHECK >= 0"
+        boolean is_active
+        datetime created_at
+    }
+
+    Order {
+        int id PK
+        int workspace_id FK
+        int created_by_id FK
+        string status "pending | confirmed | completed | cancelled"
+        text notes
+        datetime created_at
+    }
+
+    OrderItem {
+        int id PK
+        int order_id FK
+        int product_id FK "PROTECT"
+        int quantity "declared CHECK >= 1"
+        string product_name "snapshot"
+        string product_sku "snapshot"
+        decimal unit_price "snapshot, declared CHECK >= 0"
+    }
+
+    InventoryMovement {
+        int id PK
+        int product_id FK
+        int order_id FK "nullable"
+        string movement_type "restock | sale | adjustment | return"
+        int quantity "signed integer"
+        int resulting_stock "snapshot"
+        int created_by_id FK
+        datetime created_at "immutable"
+    }
+```
+
+### Relational Integrity Rules:
+1. **Workspace Scoping**: Every `Product` and `Order` belongs to exactly one `Workspace`.
+2. **Product SKU Uniqueness**: Enforced via composite constraint `UniqueConstraint(fields=['workspace', 'sku'])`. The same SKU can exist in different workspaces without collision.
+3. **Protected History**: `OrderItem.product` uses `on_delete=models.PROTECT`, preventing product deletions from corrupting historical sales records.
+4. **Owner Protection**: `Workspace.owner` uses `on_delete=models.PROTECT`, preventing deletion of user accounts that actively own workspaces.
+5. **Cascading Tenant Teardown**: Deleting a workspace cascades cleanly to all contained products, orders, memberships, and audit records.
 
 ---
 
 ## Multi-Tenant Workspace Isolation
 
-Multi-tenancy in StockPilot is implemented with workspace scoping enforced at both the database and view layers:
+StockPilot implements multi-tenancy at both the routing and database query layers:
 
-- **Strict URL Scoping**: Every workspace resource path contains `workspaces/<workspace_id>/`.
-- **Queryset Boundary**: Views inherit from `WorkspaceContextMixin`, which validates that `request.user` has an active `WorkspaceMembership` in the specified `workspace_id`.
-- **Anti-Enumeration Defense**: If an authenticated user queries a workspace ID they do not belong to, the server returns `404 Not Found` rather than `403 Forbidden`, preventing workspace existence probing.
-- **Cross-Workspace Relation Protection**: When creating order lines, products referenced must belong to the active workspace. Cross-workspace product IDs submitted in order payloads are rejected with validation errors.
-- **Object Resolution Filtering**: Direct object lookups (`/products/<pk>/`, `/orders/<pk>/`) filter on both `pk` and `workspace`. Supplying a valid ID from a different workspace returns `404 Not Found`.
+- **Explicit URL Path Scoping**: All workspace resources reside under `/api/workspaces/<workspace_id>/`.
+- **Queryset Boundary Enforcement**: API views extend `WorkspaceContextMixin`, which retrieves the requested workspace, validates that `request.user` possesses an active `WorkspaceMembership`, and attaches `self.workspace` to the view instance.
+- **Anti-Enumeration Security**: If an authenticated user queries a workspace ID they do not belong to, the API returns **`404 Not Found`** instead of `403 Forbidden`. This prevents malicious users from determining whether a specific tenant ID exists.
+- **Cross-Workspace Item Injection Prevention**: When creating order lines, the serializer verifies that all submitted `product_id`s belong to the active workspace. Cross-workspace product references are rejected with HTTP 400 validation errors.
+- **Object Resolution Scoping**: Detail routes (`/products/<pk>/`, `/orders/<pk>/`) filter simultaneously by both `pk` and `workspace=self.workspace`. Supplying a valid ID from a foreign workspace returns `404 Not Found`.
 
 ---
 
@@ -83,63 +240,76 @@ Each workspace member holds either the **Owner** or **Staff** role, governed by 
 
 | Capability | Workspace Owner | Workspace Staff | Non-Member / Outsider |
 |---|:---:|:---:|:---:|
-| View products, stock, & audit movements | Yes | Yes | 404 Not Found |
-| Restock & perform manual stock adjustments | Yes | Yes | 404 Not Found |
-| Create orders & confirm/complete/cancel orders | Yes | Yes | 404 Not Found |
-| View workspace aggregate stats & low-stock alerts | Yes | Yes | 404 Not Found |
-| Create products | Yes | Yes | 404 Not Found |
-| Update product details (name, price, threshold) | Yes | Yes | 404 Not Found |
-| Delete products | **Yes** | **No (403 Forbidden)** | 404 Not Found |
-| Delete draft (pending) orders | **Yes** | **No (403 Forbidden)** | 404 Not Found |
-| Add new members or remove staff members | **Yes** | **No (403 Forbidden)** | 404 Not Found |
+| View products, stock levels, & audit trail | Yes | Yes | 404 Not Found |
+| Restock products & submit manual stock adjustments | Yes | Yes | 404 Not Found |
+| Create sales orders & confirm / complete / cancel orders | Yes | Yes | 404 Not Found |
+| View workspace aggregate metrics & low-stock alerts | Yes | Yes | 404 Not Found |
+| Create new products in catalogue | Yes | Yes | 404 Not Found |
+| Edit product metadata (name, price, threshold, active state) | Yes | Yes | 404 Not Found |
+| Delete products from catalogue | **Yes** | **No (403 Forbidden)** | 404 Not Found |
+| Delete draft (`pending`) orders | **Yes** | **No (403 Forbidden)** | 404 Not Found |
+| Add new workspace members or remove staff | **Yes** | **No (403 Forbidden)** | 404 Not Found |
 | Update workspace metadata or delete workspace | **Yes** | **No (403 Forbidden)** | 404 Not Found |
 
-> **Note**: Primary workspace owners cannot be removed from their own workspaces to prevent orphaned tenants.
+> **Note**: Primary workspace owners cannot be removed from their own workspace, preventing orphaned tenant accounts.
 
 ---
 
-## Inventory Transaction Strategy & Atomicity
+## Inventory Transaction Strategy & Concurrency
 
-StockPilot protects inventory levels against race conditions, negative inventory, and partial failures:
+StockPilot guarantees mathematical and transactional consistency under high-volume concurrent operations:
 
-### 1. Database Row Locking (`select_for_update`)
-During order confirmation, order cancellation, and stock adjustments, the system acquires row-level locks via PostgreSQL/MySQL `SELECT ... FOR UPDATE`:
+### 1. Deterministic Row-Level Locking (`select_for_update`)
+During order confirmations, cancellations, restocks, and manual adjustments, product rows are locked using database row-level locking. To eliminate database deadlocks between concurrent requests processing multiple items in varying orders, products are **always sorted and locked in deterministic ascending primary-key order**:
+
 ```python
-# Products are always locked in deterministic ascending PK order to prevent deadlocks:
+# Acquire row locks in deterministic ascending PK order to prevent deadlocks:
 for item in self.items.select_related('product').order_by('product_id'):
     product = Product.objects.select_for_update().get(pk=item.product_id)
 ```
 
-### 2. Multi-Item All-or-Nothing Atomicity
-Order confirmation runs within `@transaction.atomic`. Before updating any inventory, the system validates stock across **all items** in the order. If even a single item exceeds available inventory:
+### 2. All-or-Nothing Multi-Item Atomicity
+Order confirmation executes inside `@transaction.atomic`. Before mutating any inventory, the system validates stock availability across **all items** in the order. If even a single item has insufficient stock:
 - `InsufficientStockError` is raised.
 - The transaction completely rolls back.
-- Zero stock quantities change.
-- No partial `sale` movements are written.
+- Zero stock quantities are modified.
+- No partial `sale` audit logs are written.
 - The order remains safely in `pending` status.
 
-### 3. Database Check Constraints
-Non-negativity is enforced directly by MySQL table check constraints:
-- `product_stock_nonneg`: `stock_quantity >= 0`
-- `product_price_nonneg`: `price >= 0`
-- `product_low_stock_threshold_nonneg`: `low_stock_threshold >= 0`
-- `orderitem_qty_positive`: `quantity >= 1`
-- `orderitem_price_nonneg`: `unit_price >= 0` (when stamped)
+### 3. Application Validation & Schema Check Constraints
+
+StockPilot establishes defense-in-depth across the application and database schema layers:
+
+- **Application-Level Enforcement (Django Layer)**:
+  - Input validation is enforced on all API requests before database queries execute.
+  - Product restocking requires a positive integer (`quantity > 0`).
+  - Manual stock adjustments require a non-empty reason and verify that `current_stock + quantity >= 0`, raising `InsufficientStockError` on potential negative balances.
+  - Order line items require `quantity >= 1`.
+  - Multi-item order confirmations check real-time stock across all items before deducting inventory inside an atomic transaction.
+- **Schema-Level Check Constraints (Model Declarations)**:
+  - Django models and migrations declare SQL check constraints:
+    - `product_stock_nonneg`: `stock_quantity >= 0`
+    - `product_price_nonneg`: `price >= 0`
+    - `product_low_stock_threshold_nonneg`: `low_stock_threshold >= 0`
+    - `orderitem_qty_positive`: `quantity >= 1`
+    - `orderitem_price_nonneg`: `unit_price >= 0` (evaluated when stamped)
+  - **Database Engine Differences**: In standard MySQL 8.0.16+, check constraints are enforced directly by the database engine. In distributed MySQL-compatible engines such as TiDB, CHECK constraint enforcement varies based on server version and cluster configuration. StockPilot does not rely on TiDB engine-level check constraint enforcement; all boundary conditions, non-negativity rules, and integrity invariants are strictly validated and guaranteed at the Django application and transaction layer.
 
 ### 4. Append-Only Audit Ledger
-`InventoryMovement` instances record every stock modification with:
+The `InventoryMovement` model records every inventory modification with:
 - `movement_type`: `restock`, `sale`, `adjustment`, or `return`.
-- Signed `quantity`: positive for stock additions; negative for stock reductions.
-- `resulting_stock`: snapshot of stock quantity immediately after the operation.
-- `created_by`: foreign key to the user who initiated the action.
-- `created_at`: immutable UTC timestamp.
-Any call to `.save()` on an existing `InventoryMovement` raises `ValueError`, guaranteeing immutability.
+- `quantity`: Signed integer (+ for stock additions, - for deductions).
+- `resulting_stock`: Absolute snapshot of `Product.stock_quantity` immediately after the transaction commits.
+- `created_by`: Foreign key attributing the action to the initiating user.
+- `created_at`: Immutable UTC timestamp.
+
+> **Immutability Guarantee**: Any invocation of `.save()` on an existing `InventoryMovement` record raises a Python `ValueError`, prohibiting edits or retrofits to the audit trail.
 
 ---
 
-## Order Lifecycle & Pricing Integrity
+## Multi-Item Order Lifecycle & Pricing Integrity
 
-An Order progresses through defined status states:
+An Order progresses through a strictly defined state machine:
 
 ```
 [ PENDING ] ────── confirm() ──────► [ CONFIRMED ] ────── complete() ──────► [ COMPLETED ]
@@ -150,114 +320,192 @@ An Order progresses through defined status states:
 ```
 
 ### Order States:
-1. **Pending**: Draft state.
-   - Products and quantities are specified.
-   - **No stock is deducted**.
-   - `OrderItem.unit_price`, `product_name`, and `product_sku` remain `NULL`/blank.
-   - Estimated totals (`estimated_line_total`, `estimated_total`) are calculated on the fly using current live product prices.
-   - The UI displays an amber indicator with *"Prices lock upon confirmation"*.
-2. **Confirmed**: Active sales order.
-   - Validates all stock availability.
-   - Deducts stock atomically for all items.
-   - Writes `sale` movements in the audit ledger.
-   - Stamps immutable snapshot values onto `OrderItem` (`unit_price = product.price`, `product_name = product.name`, `product_sku = product.sku`).
-   - If products are later renamed, repriced, or marked inactive, confirmed orders preserve exact historical prices and totals.
-3. **Completed**: Final delivered state.
-   - Terminal state. No inventory changes occur at completion since stock was already dispatched on confirmation.
-4. **Cancelled**: Terminal aborted state.
-   - If cancelled from `Pending`: Status updates to `cancelled`; no stock was ever held, so no stock changes occur.
-   - If cancelled from `Confirmed`: Stock for each item is restored atomically, and `return` inventory movements are written to the audit ledger.
-   - **Cancellation Idempotency**: Repeated cancellation requests on an already cancelled order are safely blocked with `InvalidTransitionError` and never restore inventory twice.
+
+1. **Pending (Draft)**:
+   - Line items and quantities are established.
+   - **No stock is held or deducted**.
+   - `OrderItem.unit_price`, `product_name`, and `product_sku` remain unset (`NULL`).
+   - Line totals and order totals are calculated dynamically using the current live product prices (`estimated_total`).
+   - The UI clearly indicates: *"Prices lock upon confirmation"*.
+
+2. **Confirmed (Active)**:
+   - Evaluates stock availability across all line items.
+   - Atomically deducts stock from inventory and appends `sale` movements.
+   - Stamps permanent, immutable snapshots onto `OrderItem` (`unit_price = product.price`, `product_name = product.name`, `product_sku = product.sku`).
+   - If products are later repriced, renamed, or marked inactive, confirmed orders retain their exact historical figures.
+
+3. **Completed (Fulfilled)**:
+   - Terminal state indicating fulfillment. No stock adjustments take place because goods were already dispatched upon confirmation.
+
+4. **Cancelled (Aborted)**:
+   - **From Pending**: Status transitions to `cancelled`. No stock changes occur.
+   - **From Confirmed**: Stock for each line item is restored atomically, and `return` audit entries are appended to the ledger.
+   - **Cancellation Idempotency**: Calling `.cancel()` on an already cancelled order raises `InvalidTransitionError` immediately, preventing duplicate stock replenishment.
+
+---
+
+## Dashboard Metrics & Real-Time Aggregations
+
+Workspace inventory statistics are served via `/api/workspaces/<id>/inventory/stats/` using a single server-side SQL aggregation query across the entire active catalog:
+
+```python
+stats = self.workspace.products.aggregate(
+    total_products=Count('id'),
+    total_active_products=Count('id', filter=Q(is_active=True)),
+    total_stock_units=Coalesce(Sum('stock_quantity', filter=Q(is_active=True)), 0),
+    low_stock_count=Count(
+        'id',
+        filter=Q(is_active=True, stock_quantity__lte=F('low_stock_threshold')),
+    ),
+)
+```
+
+This guarantees accurate metrics across products without client-side pagination bias or N+1 query overhead.
+
+---
+
+## API Endpoints Reference
+
+All application endpoints are prefixed with `/api/`. Requests without authentication headers return `401 Unauthorized`. Requests accessing resources outside the user's workspace return `404 Not Found`.
+
+### Authentication Endpoints (`/api/auth/`)
+| Method | Endpoint | Access | Description |
+|---|---|---|---|
+| `POST` | `/api/auth/register/` | Public | Register new user account; returns auth token & user profile |
+| `POST` | `/api/auth/login/` | Public | Authenticate with credentials; returns auth token |
+| `POST` | `/api/auth/logout/` | Authenticated | Revoke and delete user auth token |
+| `GET` | `/api/auth/me/` | Authenticated | Retrieve user profile and associated workspaces |
+
+### Workspace Endpoints (`/api/workspaces/`)
+| Method | Endpoint | Access | Description |
+|---|---|---|---|
+| `GET` | `/api/workspaces/` | Authenticated | List all workspaces the user belongs to |
+| `POST` | `/api/workspaces/` | Authenticated | Create workspace (creator automatically assigned Owner) |
+| `GET` | `/api/workspaces/<id>/` | Member | Retrieve workspace details |
+| `PUT`/`PATCH` | `/api/workspaces/<id>/` | Owner | Update workspace metadata |
+| `DELETE` | `/api/workspaces/<id>/` | Owner | Delete workspace and all scoped data |
+| `GET` | `/api/workspaces/<id>/members/` | Member | List members and roles in workspace |
+| `POST` | `/api/workspaces/<id>/members/` | Owner | Add existing user to workspace as Staff or Owner |
+| `DELETE` | `/api/workspaces/<id>/members/<user_id>/` | Owner | Remove member from workspace (primary owner protected) |
+
+### Products & Inventory Endpoints (`/api/workspaces/<id>/`)
+| Method | Endpoint | Access | Description |
+|---|---|---|---|
+| `GET` | `.../products/` | Member | List products with pagination, search (`?search=`), and filters (`?is_active=`, `?low_stock=`) |
+| `POST` | `.../products/` | Member | Create a new product in workspace |
+| `GET` | `.../products/<pk>/` | Member | Retrieve product details |
+| `PUT`/`PATCH` | `.../products/<pk>/` | Member | Update product attributes (name, price, threshold, is_active) |
+| `DELETE` | `.../products/<pk>/` | Owner | Delete product (blocked if referenced in order history) |
+| `GET` | `.../products/low-stock/` | Member | List products where `stock_quantity <= low_stock_threshold` |
+| `POST` | `.../products/<pk>/restock/` | Member | Restock product (`{"quantity": N, "notes": "..."}`) |
+| `POST` | `.../products/<pk>/adjust/` | Member | Adjust balance (`{"quantity": ±N, "notes": "mandatory"}`) |
+| `GET` | `.../products/<pk>/movements/` | Member | Retrieve append-only movement trail for product |
+| `GET` | `.../inventory/movements/` | Member | Retrieve workspace-wide audit logs with filters |
+| `GET` | `.../inventory/stats/` | Member | Single SQL aggregate returning catalog and stock statistics |
+
+### Orders Endpoints (`/api/workspaces/<id>/`)
+| Method | Endpoint | Access | Description |
+|---|---|---|---|
+| `GET` | `.../orders/` | Member | List orders with pagination, status filter (`?status=`), ordering |
+| `POST` | `.../orders/` | Member | Create a draft `pending` multi-item order |
+| `GET` | `.../orders/<pk>/` | Member | Retrieve order details with line items and snapshots |
+| `DELETE` | `.../orders/<pk>/` | Owner | Delete draft `pending` order (confirmed orders must be cancelled) |
+| `POST` | `.../orders/<pk>/confirm/` | Member | Confirm order: lock rows, deduct stock, write audit, stamp snapshots |
+| `POST` | `.../orders/<pk>/complete/` | Member | Complete order (`confirmed` → `completed`) |
+| `POST` | `.../orders/<pk>/cancel/` | Member | Cancel order: restores stock and logs return if previously confirmed |
 
 ---
 
 ## Environment Variables & Configuration
 
-StockPilot reads configuration from environment variables. Reference templates are provided in [`StockPilot/.env.example`](file:///c:/Users/User/OneDrive/Documents/Desktop/StockPilot/StockPilot/.env.example) and [`frontend/.env.example`](file:///c:/Users/User/OneDrive/Documents/Desktop/StockPilot/frontend/.env.example):
+Configuration is managed via environment variables. Reference templates are provided in [`StockPilot/.env.example`](StockPilot/.env.example) and [`frontend/.env.example`](frontend/.env.example):
 
-### Backend Variables (`StockPilot/.env`)
+### Backend Configuration (`StockPilot/.env`)
 
 ```env
 # --- Django Security ---
-DJANGO_SECRET_KEY=replace-me-with-a-long-random-string
+DJANGO_SECRET_KEY=replace-me-with-a-long-random-secret-key
 DEBUG=False
 ALLOWED_HOSTS=127.0.0.1,localhost,your-backend.onrender.com
 
-# --- MySQL Database Configuration ---
-# Option A: Discrete parameters
+# --- Database Connection (MySQL / TiDB Cloud) ---
+# Option A: Discrete Connection Parameters
 DB_NAME=stockpilot_app
-DB_USER=root
-DB_PASSWORD=replace-me
+DB_USER=replace-with-db-username
+DB_PASSWORD=replace-with-db-password
 DB_HOST=127.0.0.1
 DB_PORT=3306
 
-# Option B: Managed Database URL (takes precedence if provided)
-# DATABASE_URL=mysql://username:password@hostname:3306/stockpilot_app
+# Option B: Managed Database URL (e.g. TiDB Cloud / Aiven)
+# DATABASE_URL=mysql://USER:PASSWORD@HOST:PORT/stockpilot_app
 
-# Cloud MySQL SSL options (optional, e.g., for TiDB Cloud, Aiven, AWS RDS)
+# Cloud MySQL SSL options (enforced on TiDB Cloud)
 # DB_SSL_MODE=REQUIRED
 # DB_SSL_CA=/etc/ssl/certs/ca-certificates.crt
 
-# --- CORS & CSRF ---
-# Frontend origins permitted to interact with the API (comma-separated)
-CORS_ALLOWED_ORIGINS=http://localhost:5173,http://localhost:3000,https://your-frontend.onrender.com
-
-# CSRF trusted origins for state-changing requests (include scheme https://)
-CSRF_TRUSTED_ORIGINS=http://localhost:5173,https://your-frontend.onrender.com,https://your-backend.onrender.com
+# --- CORS & CSRF Origins ---
+CORS_ALLOWED_ORIGINS=http://localhost:5173,http://localhost:3000,https://your-frontend.netlify.app
+CSRF_TRUSTED_ORIGINS=http://localhost:5173,https://your-frontend.netlify.app,https://your-backend.onrender.com
 ```
 
-### Frontend Variables (`frontend/.env`)
+### Frontend Configuration (`frontend/.env`)
 
 ```env
-# Base URL of the StockPilot Django backend API (must point to /api)
+# Base URL of the Django backend API (must point to /api)
+# Local development:
 VITE_API_URL=http://127.0.0.1:8000/api
-# Production on Render:
+
+# Production example:
 # VITE_API_URL=https://your-backend.onrender.com/api
 ```
 
-> **Security Guarantee**: Real credentials must reside in `StockPilot/.env` and `frontend/.env`. Both `.env` files, virtual environments (`venv/`), build artifacts (`dist/`), and dependencies (`node_modules/`) are strictly excluded from Git tracking via root and subdirectory `.gitignore` files. Never commit secrets to version control.
+> [!CAUTION]
+> Real credentials must never be committed to source control. Root and subdirectory `.gitignore` files strictly exclude `.env`, `.venv/`, `dist/`, and `node_modules/`.
 
 ---
 
-## Database Migrations & Fresh Initialization
+## Database Migrations & TiDB Compatibility Notes
 
-StockPilot maintains a linear, consistent migration history that cleanly handles circular foreign key dependencies between inventory movements and orders:
+StockPilot maintains a linear migration history that cleanly resolves circular foreign key relationships between orders and inventory movements:
 
-1. **`accounts.0001_initial`**: Creates `Workspace` and `WorkspaceMembership` tables with unique user-workspace constraints.
+1. **`accounts.0001_initial`**: Creates `Workspace` and `WorkspaceMembership` tables with composite uniqueness constraints.
 2. **`inventory.0001_initial`**: Creates `Product` and `InventoryMovement` base models.
-3. **`orders.0001_initial`**: Creates `Order` and `OrderItem` models referencing `Workspace` and `Product`.
-4. **`inventory.0002_initial`**: Links `InventoryMovement.order` foreign key to `Order` and applies product SKU uniqueness per workspace.
-5. **`inventory.0003_product_product_stock_nonneg_and_more`**: Enforces non-negative DB check constraints on products.
+3. **`orders.0001_initial`**: Creates `Order` and `OrderItem` models.
+4. **`inventory.0002_initial`**: Resolves the circular reference by linking `InventoryMovement.order` foreign key to `Order` and establishing per-workspace SKU uniqueness.
+5. **`inventory.0003_product_product_stock_nonneg_and_more`**: Applies database-level non-negativity check constraints.
 
-### Initializing a Fresh Database:
-```sql
--- In MySQL shell:
-CREATE DATABASE stockpilot_app CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-```
-Then run:
-```bash
-python manage.py migrate
-```
-Django will execute all migrations across `accounts`, `inventory`, and `orders` without conflict.
+### TiDB Cloud Schema Migration Compatibility Fix
+
+During initial deployments on TiDB Cloud Serverless, standard Django migrations can encounter **Error 1072: Key column doesn't exist**. This occurs because standard Django MySQL migrations attempt to combine `ADD COLUMN` and `ADD CONSTRAINT FOREIGN KEY` into a single multi-clause `ALTER TABLE` statement, which TiDB's distributed schema engine parses concurrently before the column definition is persisted.
+
+**Implementation Fix**:
+StockPilot implements an automatic runtime compatibility patch in [`StockPilot/config/__init__.py`](StockPilot/config/__init__.py). When a connection to TiDB is detected (via host name, server version string, or environment flag), Django's `DatabaseSchemaEditor` dynamically sets `sql_create_column_inline_fk = None`. This instructs Django to first execute the `ADD COLUMN` statement, and subsequently append the foreign key constraint as a separate `ALTER TABLE` statement, resolving the multi-clause limitation on TiDB Cloud while leaving standard MySQL behavior untouched.
 
 ---
 
 ## Local Setup & Installation Instructions
 
 ### Prerequisites
-- **Python**: 3.11 or higher
-- **Node.js**: 18.x or higher (npm 9+)
-- **MySQL Server**: 8.0 or higher running on port 3306
+- **Python**: 3.11+
+- **Node.js**: 18.x or 20.x (npm 9+)
+- **MySQL Server**: 8.0+ running on port 3306 (or a remote TiDB Cloud cluster)
 
 ---
 
 ### Step 1: Backend Setup
 
-1. Open PowerShell / Terminal in the repository root and navigate to `StockPilot/`:
+1. Clone repository and navigate to the project directory:
+   ```bash
+   git clone https://github.com/Mohinkhan48/StockPilot.git
+   cd StockPilot
+   ```
+
+2. Enter the backend directory:
    ```bash
    cd StockPilot
    ```
-2. Create and activate a Python virtual environment:
+
+3. Create and activate a Python virtual environment:
    ```bash
    python -m venv venv
    # On Windows (PowerShell):
@@ -265,313 +513,212 @@ Django will execute all migrations across `accounts`, `inventory`, and `orders` 
    # On Linux / macOS:
    source venv/bin/activate
    ```
-3. Install backend dependencies:
+
+4. Install backend dependencies:
    ```bash
    pip install -r requirements.txt
    ```
-4. Configure environment variables:
+
+5. Create local database in MySQL (if running a local MySQL server):
+   ```sql
+   CREATE DATABASE stockpilot_app CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+   ```
+
+6. Configure environment variables:
    ```bash
+   # On Windows (PowerShell):
+   Copy-Item .env.example .env
+   # On Linux / macOS / Git Bash:
    cp .env.example .env
    ```
-   Open `.env` in a text editor and update `DJANGO_SECRET_KEY`, `DB_USER`, and `DB_PASSWORD`.
-5. Run migrations:
+   Edit `.env` with your local database credentials and set `DEBUG=True`.
+
+7. Run database migrations:
    ```bash
    python manage.py migrate
    ```
-6. (Optional) Create a superuser for administrative portal access (`/admin/`):
+
+8. (Optional) Create a superuser for Django admin access:
    ```bash
    python manage.py createsuperuser
    ```
-7. Launch the development server:
+
+9. Start the Django development server:
    ```bash
    python manage.py runserver 127.0.0.1:8000
    ```
-   Backend will be running at `http://127.0.0.1:8000/`.
+   The backend API will be listening at `http://127.0.0.1:8000/`.
 
 ---
 
 ### Step 2: Frontend Setup
 
-1. In a separate terminal, navigate to the `frontend/` directory:
+1. In a separate terminal, navigate from the repository root to the `frontend/` directory:
    ```bash
    cd frontend
    ```
+   *(Or if currently in the backend folder, run `cd ../frontend`)*
+
 2. Install frontend dependencies:
    ```bash
    npm install
    ```
-3. Start the Vite development server:
+
+3. Configure frontend environment variables:
+   ```bash
+   # On Windows (PowerShell):
+   Copy-Item .env.example .env
+   # On Linux / macOS / Git Bash:
+   cp .env.example .env
+   ```
+   Ensure `VITE_API_URL=http://127.0.0.1:8000/api`.
+
+4. Start Vite development server:
    ```bash
    npm run dev
    ```
-4. Access the web application at `http://localhost:5173/`.
+   Open `http://localhost:5173/` in your browser.
 
 ---
 
-## Production Deployment on Render
+## Automated Test Suites & Verification
 
-This section outlines how to deploy StockPilot on [Render](https://render.com) while keeping local development fully operational.
+### Backend Test Suite (Django / DRF)
+The backend test suite covers model constraints, atomic service methods, concurrency, workspace scoping, and role authorization.
 
-### Architecture Overview
-
-```
-┌─────────────────────────────────┐       HTTPS       ┌─────────────────────────────────┐
-│     Render Static Site          │ ────────────────► │       Render Web Service        │
-│   (React 19 + Vite Frontend)    │                   │   (Django DRF + Gunicorn WSGI)  │
-│  stockpilot-frontend.onrender   │                   │   stockpilot-backend.onrender   │
-└─────────────────────────────────┘                   └────────────────┬────────────────┘
-                                                                       │ MySQL (TCP 3306)
-                                                                       ▼
-                                                      ┌─────────────────────────────────┐
-                                                      │       Cloud MySQL Database      │
-                                                      │  (TiDB Cloud / Aiven / Railway) │
-                                                      └─────────────────────────────────┘
-```
-
-> [!IMPORTANT]
-> **Database Requirement (MySQL)**: Render provides native managed PostgreSQL databases, but does not provide managed MySQL. Because StockPilot is engineered specifically for MySQL (using `utf8mb4` collations, non-negative table check constraints, and ascending row-locking), you should pair Render with a managed cloud MySQL provider such as:
-> - **[TiDB Cloud Serverless](https://tidbcloud.com/)** *(Recommended: 100% MySQL 8 wire-compatible, generous permanent free tier, automatic SSL)*
-> - **[Aiven for MySQL](https://aiven.io/mysql)** *(Fully managed MySQL service)*
-> - **[Railway MySQL](https://railway.app/)** *(One-click MySQL instance with standard connection string)*
-> - **[AWS RDS / DigitalOcean MySQL](https://aws.amazon.com/rds/mysql/)**
-
----
-
-### Step 1: Provision a Cloud MySQL Database
-
-1. Create a MySQL database instance on your chosen provider (e.g. TiDB Cloud Serverless or Aiven).
-2. Create the database:
-   ```sql
-   CREATE DATABASE stockpilot_app CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-   ```
-3. Note your connection credentials:
-   - Host, Port (typically `3306` or `4000`), Database Name, Username, and Password.
-   - Alternatively, obtain the complete `DATABASE_URL` (format: `mysql://USER:PASSWORD@HOST:PORT/stockpilot_app`).
-   - If SSL is required by your cloud provider (standard for TiDB Cloud), set `DB_SSL_MODE=REQUIRED`.
-
----
-
-### Step 2: Deploy Backend Web Service on Render
-
-1. Log in to your [Render Dashboard](https://dashboard.render.com/) and click **New +** > **Web Service**.
-2. Connect your GitHub repository: `https://github.com/Mohinkhan48/StockPilot`.
-3. Configure service details:
-   - **Name**: `stockpilot-backend`
-   - **Region**: Choose the region closest to your MySQL database.
-   - **Root Directory**: `StockPilot`
-   - **Runtime**: `Python 3`
-   - **Build Command**: `./build.sh` *(or `pip install -r requirements.txt && python manage.py collectstatic --no-input && python manage.py migrate`)*
-   - **Start Command**: `gunicorn config.wsgi:application`
-   - **Instance Type**: Free or Starter
-4. Add the following **Environment Variables** in the Render Dashboard:
-
-| Variable | Recommended Production Value | Description |
-|---|---|---|
-| `DJANGO_SECRET_KEY` | *(Generate a 50+ char random string)* | Cryptographic signing key |
-| `DEBUG` | `False` | Disables debug mode for production security |
-| `ALLOWED_HOSTS` | `localhost,127.0.0.1,stockpilot-backend.onrender.com` | Allowed host headers (Render hostname automatically appended) |
-| `DATABASE_URL` | `mysql://USER:PASSWORD@HOST:PORT/stockpilot_app` | *Or use discrete `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT`* |
-| `DB_SSL_MODE` | `REQUIRED` | *(Set if cloud MySQL enforces TLS/SSL)* |
-| `CORS_ALLOWED_ORIGINS` | `https://stockpilot-frontend.onrender.com` | Frontend URL allowed to make cross-origin requests |
-| `CSRF_TRUSTED_ORIGINS` | `https://stockpilot-frontend.onrender.com,https://stockpilot-backend.onrender.com` | Trusted origins for CSRF checks |
-| `PYTHON_VERSION` | `3.11.9` | Pinned Python runtime version |
-
-5. Click **Create Web Service**. Render will run `build.sh` (which installs dependencies, runs `collectstatic` with WhiteNoise, and applies all database migrations) and launch Gunicorn.
-
----
-
-### Step 3: Create Admin Superuser (Optional)
-
-Once the backend service status is **Live**:
-1. Open the **Shell** tab in the Render Dashboard for `stockpilot-backend`.
-2. Run:
-   ```bash
-   python manage.py createsuperuser
-   ```
-3. Follow the prompts to create an admin account for `/admin/`.
-
----
-
-### Step 4: Deploy Frontend Static Site on Render
-
-1. In the Render Dashboard, click **New +** > **Static Site**.
-2. Connect the same GitHub repository: `https://github.com/Mohinkhan48/StockPilot`.
-3. Configure the static site settings:
-   - **Name**: `stockpilot-frontend`
-   - **Root Directory**: `frontend`
-   - **Build Command**: `npm run build`
-   - **Publish Directory**: `dist`
-4. Add the following **Environment Variable**:
-
-| Variable | Value | Description |
-|---|---|---|
-| `VITE_API_URL` | `https://stockpilot-backend.onrender.com/api` | Points frontend Axios client to the live DRF backend |
-
-5. Configure **Redirects / Rewrites** (essential for Single Page Application routing):
-   - Under **Settings** > **Redirects/Rewrites**, click **Add Rule**:
-     - **Type**: `Rewrite`
-     - **Source**: `/*`
-     - **Destination**: `/index.html`
-   - This ensures refreshing nested routes like `/orders/1` or `/products` routes correctly through React Router.
-6. Click **Create Static Site**.
-
----
-
-### Step 5: Final Cross-Origin Verification
-
-1. Once the frontend static site is live, copy its exact URL (e.g. `https://stockpilot-frontend.onrender.com`).
-2. Go back to `stockpilot-backend` in Render > **Environment**.
-3. Verify that `CORS_ALLOWED_ORIGINS` and `CSRF_TRUSTED_ORIGINS` include the frontend URL exactly without trailing slashes.
-4. Open the frontend URL in your browser, register a new workspace owner account, and verify login, product creation, and order workflows.
-
----
-
-## API Endpoints Documentation
-
-All API endpoints are prefixed with `/api/`. Unauthenticated requests to protected endpoints return `401 Unauthorized`. Requests accessing resources outside the user's workspace return `404 Not Found`.
-
-### Authentication Endpoints (`/api/auth/`)
-| Method | Endpoint | Access | Description |
-|---|---|---|---|
-| `POST` | `/api/auth/register/` | Public | Register new user account; returns auth token & user profile |
-| `POST` | `/api/auth/login/` | Public | Login with username/password; returns auth token |
-| `POST` | `/api/auth/logout/` | Authenticated | Revoke and delete current user's auth token |
-| `GET` | `/api/auth/me/` | Authenticated | Retrieve current user profile and list of joined workspaces |
-
-### Workspace Endpoints (`/api/workspaces/`)
-| Method | Endpoint | Access | Description |
-|---|---|---|---|
-| `GET` | `/api/workspaces/` | Authenticated | List all workspaces current user belongs to |
-| `POST` | `/api/workspaces/` | Authenticated | Create a new workspace (creator automatically becomes Owner) |
-| `GET` | `/api/workspaces/<id>/` | Member | Retrieve details of a specific workspace |
-| `PUT`/`PATCH` | `/api/workspaces/<id>/` | Owner | Update workspace name/details |
-| `DELETE` | `/api/workspaces/<id>/` | Owner | Delete workspace and all contained data |
-| `GET` | `/api/workspaces/<id>/members/` | Member | List all members and their roles in workspace |
-| `POST` | `/api/workspaces/<id>/members/` | Owner | Add existing user to workspace as Staff or Owner |
-| `DELETE` | `/api/workspaces/<id>/members/<user_id>/` | Owner | Remove user from workspace (primary owner cannot be removed) |
-
-### Products & Inventory Endpoints (`/api/workspaces/<id>/`)
-| Method | Endpoint | Access | Description |
-|---|---|---|---|
-| `GET` | `.../products/` | Member | List products with search (`?search=`), pagination, and filters (`?is_active=`, `?low_stock=`) |
-| `POST` | `.../products/` | Member | Create a new product in the workspace |
-| `GET` | `.../products/<pk>/` | Member | Retrieve product details |
-| `PUT`/`PATCH` | `.../products/<pk>/` | Member | Update product information (price, name, low-stock threshold, active status) |
-| `DELETE` | `.../products/<pk>/` | Owner | Permanently delete product |
-| `GET` | `.../products/low-stock/` | Member | List products where `stock_quantity <= low_stock_threshold` |
-| `POST` | `.../products/<pk>/restock/` | Member | Increase stock (`{"quantity": N, "notes": "..."}`) with audit log |
-| `POST` | `.../products/<pk>/adjust/` | Member | Manually adjust stock (`{"quantity": ±N, "notes": "mandatory"}`) |
-| `GET` | `.../products/<pk>/movements/` | Member | Retrieve append-only audit trail for specific product |
-| `GET` | `.../inventory/movements/` | Member | Retrieve workspace-wide audit logs with filters (`?movement_type=`, `?product_id=`) |
-| `GET` | `.../inventory/stats/` | Member | Single SQL aggregation returning `total_products`, `total_active_products`, `total_stock_units`, and `low_stock_count` |
-
-### Orders Endpoints (`/api/workspaces/<id>/`)
-| Method | Endpoint | Access | Description |
-|---|---|---|---|
-| `GET` | `.../orders/` | Member | List orders with pagination, filtering (`?status=`), and ordering (`?ordering=`) |
-| `POST` | `.../orders/` | Member | Create a draft pending order with multiple items |
-| `GET` | `.../orders/<pk>/` | Member | Retrieve order details with items, snapshots, and estimated/confirmed totals |
-| `DELETE` | `.../orders/<pk>/` | Owner | Delete draft `pending` order (confirmed orders cannot be deleted; must cancel) |
-| `POST` | `.../orders/<pk>/confirm/` | Member | Transition `pending` → `confirmed`: lock rows, deduct stock atomically, write sales logs, stamp price snapshots |
-| `POST` | `.../orders/<pk>/complete/` | Member | Transition `confirmed` → `completed` (terminal state) |
-| `POST` | `.../orders/<pk>/cancel/` | Member | Transition order to `cancelled`; restores inventory and writes return movements if order was confirmed |
-
----
-
-## Automated Test Suite & Verification
-
-StockPilot includes a test suite of **123 automated tests** spanning unit, model constraint, API integration, multi-tenant isolation, role authorization, and concurrency testing.
-
-### Test Categories:
-1. **Accounts & RBAC Tests (`accounts/`)**:
-   - User registration, token generation, login, logout, and token revocation.
-   - Workspace creation and auto-assignment of creator as Owner.
-   - Role enforcement (Staff blocked from deleting products, deleting draft orders, and managing members).
-   - Cross-workspace 404 anti-enumeration protections.
-2. **Inventory & Movement Tests (`inventory/`)**:
-   - Product SKU uniqueness enforced per workspace (same SKU allowed across different workspaces).
-   - Non-negative stock and price database constraints.
-   - Immutability of `InventoryMovement` records (append-only ledger).
-   - Validations rejecting 0 or negative restocking quantities.
-   - Stock adjustments rejecting deductions that would yield negative stock.
-   - Single-query aggregate statistics endpoint verification (`/inventory/stats/`).
-   - Multi-threaded concurrent order confirmation preventing overselling.
-3. **Orders & Pricing Tests (`orders/`)**:
-   - Server-authoritative pricing rejection: client-submitted `unit_price`, line totals, or order totals are discarded.
-   - Estimated total calculation for pending orders ($599 mouse × 2 = $1,198 estimated total; unit_price remains NULL).
-   - Atomic confirmation: Multi-item orders where one item lacks sufficient stock roll back completely with zero deductions.
-   - Price and name snapshots remaining immutable after products are modified or deleted.
-   - Order lifecycle transitions (`pending` → `confirmed` → `completed`).
-   - Idempotent cancellation: Cancelling an order twice raises `InvalidTransitionError` and restores inventory exactly once.
-
-### Running Backend Tests:
-Activate the virtual environment, load the environment variables, and run:
+To execute the backend test suite:
 ```powershell
-& .\venv\Scripts\Activate.ps1
-Get-Content .env | ForEach-Object { if ($_ -match '^\s*([^#][^=]+)=(.*)$') { [System.Environment]::SetEnvironmentVariable($matches[1].Trim(), $matches[2].Trim(), 'Process') } }
+cd StockPilot
 python manage.py test --verbosity=2
 ```
-**Verification Result**:
+
+**Previously Recorded Test Results**:
 ```text
 Ran 123 tests in 159.345s
 OK
 Destroying test database for alias 'default' ('test_stockpilot_app')...
 ```
 
-### Running Frontend Type-Check & Build:
-From the `frontend/` directory:
+#### Key Test Coverage Areas:
+- **Accounts & RBAC**: Token generation/revocation, member role checks, workspace owner immutability, cross-workspace 404 anti-enumeration.
+- **Inventory Operations**: SKU uniqueness scoped to workspace, model validation, immutability of `InventoryMovement` records, negative stock prevention.
+- **Order Lifecycle & Pricing**: Rejection of client-submitted unit prices, dynamic estimated totals for pending orders, atomic multi-item stock deductions, snapshot retention after product changes, cancellation idempotency.
+- **Concurrency**: Deterministic row-locking verifying that concurrent order confirmation requests execute safely without overselling.
+
+---
+
+### Frontend Test Suite (Vitest)
+The frontend includes unit and component tests executed with Vitest:
+
 ```bash
+cd frontend
+npm test
+```
+
+**Previously Recorded Test Results**:
+```text
+ ✓ src/components/orders/CancelOrderModal.test.tsx (9 tests) 21ms
+
+ Test Files  1 passed (1)
+      Tests  9 passed (9)
+   Duration  403ms
+```
+
+### Frontend Type-Check & Production Bundle Build:
+To verify TypeScript compilation and Vite bundling:
+```bash
+cd frontend
 npm run build
 ```
-**Verification Result**:
+
+**Previously Recorded Build Output**:
 ```text
 > frontend@0.0.0 build
 > tsc -b && vite build
 
 vite v8.3.4 building client environment for production...
-✓ 1991 modules transformed.
-dist/index.html                   0.76 kB │ gzip:   0.43 kB
-dist/assets/index-SMAOuOxD.css    6.02 kB │ gzip:   1.79 kB
-dist/assets/index-NzsW7rIv.js   389.42 kB │ gzip: 115.95 kB
-✓ built in 641ms
+✓ 1992 modules transformed.
+dist/index.html                   0.76 kB │ gzip:   0.44 kB
+dist/assets/index-D6vD4u1K.css    6.08 kB │ gzip:   1.82 kB
+dist/assets/index-BZbjfXjN.js   394.52 kB │ gzip: 117.04 kB
+✓ built in 1.05s
 ```
+
+---
+
+## Production Deployment Architecture
+
+The live production deployment of StockPilot is architected across three specialized cloud tiers:
+
+```
+┌─────────────────────────────────┐       HTTPS       ┌─────────────────────────────────┐
+│          Netlify SPA            │ ────────────────► │       Render Web Service        │
+│   (React 19 + TypeScript)       │    REST API       │   (Django DRF + Gunicorn WSGI)  │
+│  stockpilot-mohin-app.netlify   │                   │   stockpilot-49vs.onrender.com  │
+└─────────────────────────────────┘                   └────────────────┬────────────────┘
+                                                                       │ TLS (TCP 4000)
+                                                                       ▼
+                                                      ┌─────────────────────────────────┐
+                                                      │      TiDB Cloud Serverless      │
+                                                      │   (Distributed MySQL Database)  │
+                                                      └─────────────────────────────────┘
+```
+
+### 1. Database Tier: TiDB Cloud Serverless
+- Provisioned a Serverless TiDB cluster (100% MySQL 8 wire-compatible).
+- Database created with `utf8mb4` encoding and TLS encryption required.
+
+### 2. Backend Tier: Render Web Service
+- **Service Name**: `stockpilot-49vs`
+- **Root Directory**: `StockPilot`
+- **Build Command**: `./build.sh` (installs dependencies, collects WhiteNoise static files, applies migrations)
+- **Start Command**: `gunicorn config.wsgi:application`
+- **Environment Variables**:
+  - `DJANGO_SECRET_KEY`: High-entropy random production secret.
+  - `DEBUG`: `False`
+  - `ALLOWED_HOSTS`: `localhost,127.0.0.1,stockpilot-49vs.onrender.com`
+  - `DATABASE_URL`: `mysql://USER:PASSWORD@HOST:4000/stockpilot_app`
+  - `DB_SSL_MODE`: `REQUIRED`
+  - `CORS_ALLOWED_ORIGINS`: `https://stockpilot-mohin-app.netlify.app`
+  - `CSRF_TRUSTED_ORIGINS`: `https://stockpilot-mohin-app.netlify.app,https://stockpilot-49vs.onrender.com`
+
+### 3. Frontend Tier: Netlify SPA
+- **Site Name**: `stockpilot-mohin-app`
+- **Configuration Files**: [`netlify.toml`](netlify.toml) & [`frontend/netlify.toml`](frontend/netlify.toml)
+- **Base Directory**: `frontend`
+- **Publish Directory**: `dist`
+- **Build Command**: `npm install && npm run build`
+- **SPA Rewrites**: Redirects rule `/* -> /index.html 200` to support client-side React Router navigation.
+- **Environment Variable**: `VITE_API_URL=https://stockpilot-49vs.onrender.com/api`
+
+---
+
+## Known Limitations & Outstanding Issues
+
+The following items are documented transparently for evaluation:
+
+1. **Chrome Safe Browsing Warning on Render Backend (Unresolved Deployment Issue)**:
+   - A Google Chrome Safe Browsing warning (*"Deceptive site ahead"*) has been observed when navigating directly to the Render backend domain (`https://stockpilot-49vs.onrender.com/`).
+   - **Status**: The warning has been observed and remains an active, unresolved deployment issue; its underlying cause has not been confirmed, and no claims regarding backend safety can be made without independent verification. Direct visits to the backend URL in Google Chrome may be blocked or flagged with this warning banner. Cross-origin API requests made from the live Netlify frontend interface (`https://stockpilot-mohin-app.netlify.app/`) to the backend API currently complete over HTTPS, but direct browser navigation to the backend domain remains affected until the issue is investigated and resolved.
+
+2. **Render Free-Tier Spin-Down (Cold Starts)**:
+   - The backend is hosted on Render's free tier, which puts inactive web services to sleep after 15 minutes of inactivity. An initial HTTP request after dormancy may take 30 to 50 seconds to warm up the Gunicorn process. Subsequent requests respond with standard low latency.
+
+3. **Product Deletion vs. Catalog Archival**:
+   - The platform prevents deleting products that are referenced by existing sales orders (`on_delete=models.PROTECT`). Attempting to delete such a product raises an error. The recommended workflow for discontinued items is to toggle `is_active=False` rather than deleting the catalog record.
 
 ---
 
 ## AI Assistance Disclosure
 
-In accordance with academic and assessment transparency guidelines:
+In alignment with evaluation and academic transparency standards:
 
-- **AI Tools Used**: Google DeepMind Antigravity AI agentic coding assistant powered by Gemini.
-- **Scope of AI Assistance**:
-  - Architectural review and threat modeling for multi-tenant isolation and anti-enumeration defenses.
-  - Designing row-locking concurrency control (`select_for_update`) to prevent inventory overselling and deadlocks.
-  - Formulating server-authoritative pricing flow with deferred snapshots and estimated totals.
-  - Implementing the server-side aggregate statistics endpoint (`WorkspaceInventoryStatsView`).
-  - Expanding the automated test suite to 123 tests, specifically boundary condition, regression, and concurrency test cases.
-  - Codebase auditing, migration integrity checking, and documentation synthesis.
-- **Human Author Accountability**: All architecture decisions, domain schemas, business logic implementations, and test assertions were reviewed, executed, verified, and validated for correctness.
-
----
-
-## Submission & Deployment Readiness Status
-
-### Completed Deliverables (Verified Locally):
-- [x] **Backend Implementation**: Fully functional Django REST Framework API with token authentication, multi-tenancy, and RBAC.
-- [x] **Frontend Implementation**: Modern React 19 + TypeScript + Vite UI with comprehensive workspace, product, inventory, and order views.
-- [x] **Database Schema & Migrations**: Complete migration graph with MySQL constraints, tested and verified on `stockpilot_app`.
-- [x] **Test Coverage**: 123 automated test cases passing cleanly with zero failures or errors.
-- [x] **Frontend Production Build**: Clean TypeScript compilation and Vite bundling with zero errors.
-- [x] **Secrets Hygiene**: `.gitignore` configured to exclude `.env`, virtual environments, and build artifacts. Template `.env.example` provided.
-
-### Pending Deliverables Required for Submission:
-To complete final assessment submission, the following external actions must be performed:
-1. **Git Repository Publication**:
-   - The local Git repository has been initialized (`git init`), and all sensitive files are verified excluded.
-   - Outstanding action: Add a remote GitHub/GitLab repository origin (`git remote add origin <URL>`), commit the project files, and push to the remote repository.
-2. **Production Deployment**:
-   - The application has not been deployed to a live cloud host (e.g., Render, Railway, AWS, DigitalOcean).
-   - Outstanding action: Provision a managed MySQL database and containerized backend/frontend web services with production environment variables (`DEBUG=False`).
-3. **Safe Demo Access**:
-   - No public production URL or live evaluator credentials currently exist.
-   - Outstanding action: If an interactive live demo is required by the evaluator, seed non-production sample accounts and provide demo credentials in the submission portal.
+- **AI Tools Utilized**: Google DeepMind Antigravity AI coding assistant powered by the Gemini model family.
+- **Scope of AI Collaboration**:
+  - Threat modeling and validation for multi-tenant isolation and 404 anti-enumeration protections.
+  - Designing deterministic ascending primary-key row-locking (`select_for_update`) to prevent concurrency deadlocks and inventory overselling.
+  - Implementing the server-authoritative pricing flow with deferred line item snapshots.
+  - Formulating the TiDB schema migration compatibility patch in `StockPilot/config/__init__.py`.
+  - Authoring and maintaining the 123 backend Django test cases and frontend Vitest suite.
+  - Diagnosing deployment configurations across Render, Netlify, and TiDB Cloud.
+- **Human Author Responsibility**: All business logic implementations, database constraints, architectural designs, code modifications, and test suite executions were verified, reviewed, and validated for full compliance.
