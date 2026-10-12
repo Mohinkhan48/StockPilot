@@ -51,7 +51,7 @@ export function extractErrorMessage(error: unknown): string {
     const data = error.response?.data;
     if (!data) {
       if (error.message === 'Network Error') {
-        return 'Unable to connect to the StockPilot backend server (http://127.0.0.1:8000). Please ensure it is running.';
+        return `Unable to connect to the StockPilot backend server (${API_BASE_URL}). Please ensure it is running.`;
       }
       return error.message || 'An unexpected error occurred.';
     }

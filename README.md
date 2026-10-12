@@ -17,6 +17,7 @@ The system is designed with strict multi-tenant workspace isolation, server-auth
 - [Environment Variables & Configuration](#environment-variables--configuration)
 - [Database Migrations & Fresh Initialization](#database-migrations--fresh-initialization)
 - [Local Setup & Installation Instructions](#local-setup--installation-instructions)
+- [Production Deployment on Render](#production-deployment-on-render)
 - [API Endpoints Documentation](#api-endpoints-documentation)
 - [Automated Test Suite & Verification](#automated-test-suite--verification)
 - [AI Assistance Disclosure](#ai-assistance-disclosure)
@@ -41,9 +42,11 @@ Managing inventory and sales orders across distinct client accounts or business 
 ### Backend
 - **Framework**: Django 5.2.18
 - **API Engine**: Django REST Framework (DRF) 3.18.3
+- **WSGI Server**: Gunicorn 23.0.0 (production HTTP server on Render)
+- **Static Asset Serving**: WhiteNoise 6.8.2 (efficient production static file delivery)
 - **Authentication**: TokenAuthentication (`rest_framework.authtoken`) with session support
 - **CORS Support**: `django-cors-headers` 4.9.0
-- **Database Connector**: `mysqlclient` 2.3.0
+- **Database Connectors**: `mysqlclient` 2.3.0 (native C client) with `PyMySQL` 1.1.1 pure-Python fallback
 
 ### Frontend
 - **Framework**: React 19.2.8
@@ -170,26 +173,49 @@ An Order progresses through defined status states:
 
 ## Environment Variables & Configuration
 
-StockPilot reads configuration from environment variables. A template is provided in [`StockPilot/.env.example`](file:///c:/Users/User/OneDrive/Documents/Desktop/StockPilot/StockPilot/.env.example):
+StockPilot reads configuration from environment variables. Reference templates are provided in [`StockPilot/.env.example`](file:///c:/Users/User/OneDrive/Documents/Desktop/StockPilot/StockPilot/.env.example) and [`frontend/.env.example`](file:///c:/Users/User/OneDrive/Documents/Desktop/StockPilot/frontend/.env.example):
+
+### Backend Variables (`StockPilot/.env`)
 
 ```env
-# Django Security
+# --- Django Security ---
 DJANGO_SECRET_KEY=replace-me-with-a-long-random-string
 DEBUG=False
-ALLOWED_HOSTS=127.0.0.1,localhost
+ALLOWED_HOSTS=127.0.0.1,localhost,your-backend.onrender.com
 
-# MySQL Database Configuration
+# --- MySQL Database Configuration ---
+# Option A: Discrete parameters
 DB_NAME=stockpilot_app
 DB_USER=root
 DB_PASSWORD=replace-me
 DB_HOST=127.0.0.1
 DB_PORT=3306
 
-# Frontend CORS
-CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173
+# Option B: Managed Database URL (takes precedence if provided)
+# DATABASE_URL=mysql://username:password@hostname:3306/stockpilot_app
+
+# Cloud MySQL SSL options (optional, e.g., for TiDB Cloud, Aiven, AWS RDS)
+# DB_SSL_MODE=REQUIRED
+# DB_SSL_CA=/etc/ssl/certs/ca-certificates.crt
+
+# --- CORS & CSRF ---
+# Frontend origins permitted to interact with the API (comma-separated)
+CORS_ALLOWED_ORIGINS=http://localhost:5173,http://localhost:3000,https://your-frontend.onrender.com
+
+# CSRF trusted origins for state-changing requests (include scheme https://)
+CSRF_TRUSTED_ORIGINS=http://localhost:5173,https://your-frontend.onrender.com,https://your-backend.onrender.com
 ```
 
-> **Security Guarantee**: Real credentials must reside in `StockPilot/.env`. The `.env` file, virtual environments (`venv/`), build artifacts (`dist/`), and dependencies (`node_modules/`) are strictly excluded from Git tracking via `.gitignore`. Never commit secrets to version control.
+### Frontend Variables (`frontend/.env`)
+
+```env
+# Base URL of the StockPilot Django backend API (must point to /api)
+VITE_API_URL=http://127.0.0.1:8000/api
+# Production on Render:
+# VITE_API_URL=https://your-backend.onrender.com/api
+```
+
+> **Security Guarantee**: Real credentials must reside in `StockPilot/.env` and `frontend/.env`. Both `.env` files, virtual environments (`venv/`), build artifacts (`dist/`), and dependencies (`node_modules/`) are strictly excluded from Git tracking via root and subdirectory `.gitignore` files. Never commit secrets to version control.
 
 ---
 
@@ -279,6 +305,124 @@ Django will execute all migrations across `accounts`, `inventory`, and `orders` 
    npm run dev
    ```
 4. Access the web application at `http://localhost:5173/`.
+
+---
+
+## Production Deployment on Render
+
+This section outlines how to deploy StockPilot on [Render](https://render.com) while keeping local development fully operational.
+
+### Architecture Overview
+
+```
+┌─────────────────────────────────┐       HTTPS       ┌─────────────────────────────────┐
+│     Render Static Site          │ ────────────────► │       Render Web Service        │
+│   (React 19 + Vite Frontend)    │                   │   (Django DRF + Gunicorn WSGI)  │
+│  stockpilot-frontend.onrender   │                   │   stockpilot-backend.onrender   │
+└─────────────────────────────────┘                   └────────────────┬────────────────┘
+                                                                       │ MySQL (TCP 3306)
+                                                                       ▼
+                                                      ┌─────────────────────────────────┐
+                                                      │       Cloud MySQL Database      │
+                                                      │  (TiDB Cloud / Aiven / Railway) │
+                                                      └─────────────────────────────────┘
+```
+
+> [!IMPORTANT]
+> **Database Requirement (MySQL)**: Render provides native managed PostgreSQL databases, but does not provide managed MySQL. Because StockPilot is engineered specifically for MySQL (using `utf8mb4` collations, non-negative table check constraints, and ascending row-locking), you should pair Render with a managed cloud MySQL provider such as:
+> - **[TiDB Cloud Serverless](https://tidbcloud.com/)** *(Recommended: 100% MySQL 8 wire-compatible, generous permanent free tier, automatic SSL)*
+> - **[Aiven for MySQL](https://aiven.io/mysql)** *(Fully managed MySQL service)*
+> - **[Railway MySQL](https://railway.app/)** *(One-click MySQL instance with standard connection string)*
+> - **[AWS RDS / DigitalOcean MySQL](https://aws.amazon.com/rds/mysql/)**
+
+---
+
+### Step 1: Provision a Cloud MySQL Database
+
+1. Create a MySQL database instance on your chosen provider (e.g. TiDB Cloud Serverless or Aiven).
+2. Create the database:
+   ```sql
+   CREATE DATABASE stockpilot_app CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+   ```
+3. Note your connection credentials:
+   - Host, Port (typically `3306` or `4000`), Database Name, Username, and Password.
+   - Alternatively, obtain the complete `DATABASE_URL` (format: `mysql://USER:PASSWORD@HOST:PORT/stockpilot_app`).
+   - If SSL is required by your cloud provider (standard for TiDB Cloud), set `DB_SSL_MODE=REQUIRED`.
+
+---
+
+### Step 2: Deploy Backend Web Service on Render
+
+1. Log in to your [Render Dashboard](https://dashboard.render.com/) and click **New +** > **Web Service**.
+2. Connect your GitHub repository: `https://github.com/Mohinkhan48/StockPilot`.
+3. Configure service details:
+   - **Name**: `stockpilot-backend`
+   - **Region**: Choose the region closest to your MySQL database.
+   - **Root Directory**: `StockPilot`
+   - **Runtime**: `Python 3`
+   - **Build Command**: `./build.sh` *(or `pip install -r requirements.txt && python manage.py collectstatic --no-input && python manage.py migrate`)*
+   - **Start Command**: `gunicorn config.wsgi:application`
+   - **Instance Type**: Free or Starter
+4. Add the following **Environment Variables** in the Render Dashboard:
+
+| Variable | Recommended Production Value | Description |
+|---|---|---|
+| `DJANGO_SECRET_KEY` | *(Generate a 50+ char random string)* | Cryptographic signing key |
+| `DEBUG` | `False` | Disables debug mode for production security |
+| `ALLOWED_HOSTS` | `localhost,127.0.0.1,stockpilot-backend.onrender.com` | Allowed host headers (Render hostname automatically appended) |
+| `DATABASE_URL` | `mysql://USER:PASSWORD@HOST:PORT/stockpilot_app` | *Or use discrete `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT`* |
+| `DB_SSL_MODE` | `REQUIRED` | *(Set if cloud MySQL enforces TLS/SSL)* |
+| `CORS_ALLOWED_ORIGINS` | `https://stockpilot-frontend.onrender.com` | Frontend URL allowed to make cross-origin requests |
+| `CSRF_TRUSTED_ORIGINS` | `https://stockpilot-frontend.onrender.com,https://stockpilot-backend.onrender.com` | Trusted origins for CSRF checks |
+| `PYTHON_VERSION` | `3.11.9` | Pinned Python runtime version |
+
+5. Click **Create Web Service**. Render will run `build.sh` (which installs dependencies, runs `collectstatic` with WhiteNoise, and applies all database migrations) and launch Gunicorn.
+
+---
+
+### Step 3: Create Admin Superuser (Optional)
+
+Once the backend service status is **Live**:
+1. Open the **Shell** tab in the Render Dashboard for `stockpilot-backend`.
+2. Run:
+   ```bash
+   python manage.py createsuperuser
+   ```
+3. Follow the prompts to create an admin account for `/admin/`.
+
+---
+
+### Step 4: Deploy Frontend Static Site on Render
+
+1. In the Render Dashboard, click **New +** > **Static Site**.
+2. Connect the same GitHub repository: `https://github.com/Mohinkhan48/StockPilot`.
+3. Configure the static site settings:
+   - **Name**: `stockpilot-frontend`
+   - **Root Directory**: `frontend`
+   - **Build Command**: `npm run build`
+   - **Publish Directory**: `dist`
+4. Add the following **Environment Variable**:
+
+| Variable | Value | Description |
+|---|---|---|
+| `VITE_API_URL` | `https://stockpilot-backend.onrender.com/api` | Points frontend Axios client to the live DRF backend |
+
+5. Configure **Redirects / Rewrites** (essential for Single Page Application routing):
+   - Under **Settings** > **Redirects/Rewrites**, click **Add Rule**:
+     - **Type**: `Rewrite`
+     - **Source**: `/*`
+     - **Destination**: `/index.html`
+   - This ensures refreshing nested routes like `/orders/1` or `/products` routes correctly through React Router.
+6. Click **Create Static Site**.
+
+---
+
+### Step 5: Final Cross-Origin Verification
+
+1. Once the frontend static site is live, copy its exact URL (e.g. `https://stockpilot-frontend.onrender.com`).
+2. Go back to `stockpilot-backend` in Render > **Environment**.
+3. Verify that `CORS_ALLOWED_ORIGINS` and `CSRF_TRUSTED_ORIGINS` include the frontend URL exactly without trailing slashes.
+4. Open the frontend URL in your browser, register a new workspace owner account, and verify login, product creation, and order workflows.
 
 ---
 

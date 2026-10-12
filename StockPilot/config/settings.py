@@ -40,6 +40,11 @@ DEBUG = os.environ.get('DEBUG', 'False') == 'True'
 _allowed = os.environ.get('ALLOWED_HOSTS', '127.0.0.1,localhost')
 ALLOWED_HOSTS = [h.strip() for h in _allowed.split(',') if h.strip()]
 
+# Automatically add Render external hostname if provided by the environment
+_render_host = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
+if _render_host and _render_host not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS.append(_render_host)
+
 # ---------------------------------------------------------------------------
 # Application definition
 # ---------------------------------------------------------------------------
@@ -64,6 +69,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -94,21 +100,43 @@ WSGI_APPLICATION = 'config.wsgi.application'
 
 # ---------------------------------------------------------------------------
 # Database
-# Only stockpilot_app is used. Do not modify or delete the stockpilot DB.
+# Production support for MySQL on Render/cloud (via discrete env vars or DATABASE_URL).
 # ---------------------------------------------------------------------------
+_db_url = os.environ.get('DATABASE_URL')
+if _db_url:
+    from urllib.parse import urlparse, unquote
+    _parsed_url = urlparse(_db_url)
+    _db_name = _parsed_url.path.lstrip('/')
+    _db_user = unquote(_parsed_url.username or '')
+    _db_password = unquote(_parsed_url.password or '')
+    _db_host = _parsed_url.hostname or '127.0.0.1'
+    _db_port = str(_parsed_url.port or 3306)
+else:
+    _db_name = os.environ.get('DB_NAME', 'stockpilot_app')
+    _db_user = os.environ.get('DB_USER', 'root')
+    _db_password = os.environ.get('DB_PASSWORD', '')
+    _db_host = os.environ.get('DB_HOST', '127.0.0.1')
+    _db_port = os.environ.get('DB_PORT', '3306')
+
+_db_options = {
+    'charset': 'utf8mb4',
+}
+if os.environ.get('DB_SSL_CA'):
+    _db_options['ssl'] = {'ca': os.environ['DB_SSL_CA']}
+elif os.environ.get('DB_SSL_MODE'):
+    _db_options['ssl_mode'] = os.environ['DB_SSL_MODE']
+
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
-        'NAME': os.environ.get('DB_NAME', 'stockpilot_app'),
-        'USER': os.environ.get('DB_USER', 'root'),
-        'PASSWORD': os.environ.get('DB_PASSWORD', ''),
-        'HOST': os.environ.get('DB_HOST', '127.0.0.1'),
-        'PORT': os.environ.get('DB_PORT', '3306'),
-        'OPTIONS': {
-            'charset': 'utf8mb4',
-        },
+        'NAME': _db_name,
+        'USER': _db_user,
+        'PASSWORD': _db_password,
+        'HOST': _db_host,
+        'PORT': _db_port,
+        'OPTIONS': _db_options,
         'TEST': {
-            # Use a dedicated test database so the app DB is never touched.
+            # Dedicated test database so the app DB is never touched.
             'NAME': 'test_stockpilot_app',
         },
     }
@@ -133,9 +161,19 @@ USE_I18N = True
 USE_TZ = True
 
 # ---------------------------------------------------------------------------
-# Static files
+# Static files & WhiteNoise
 # ---------------------------------------------------------------------------
 STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+STATIC_ROOT.mkdir(parents=True, exist_ok=True)
+STORAGES = {
+    'default': {
+        'BACKEND': 'django.core.files.storage.FileSystemStorage',
+    },
+    'staticfiles': {
+        'BACKEND': 'whitenoise.storage.CompressedStaticFilesStorage',
+    },
+}
 
 # ---------------------------------------------------------------------------
 # Default primary key
@@ -168,3 +206,24 @@ CORS_ALLOWED_ORIGINS = [
     ).split(',') if h.strip()
 ]
 CORS_ALLOW_CREDENTIALS = True
+
+# ---------------------------------------------------------------------------
+# CSRF Trusted Origins
+# ---------------------------------------------------------------------------
+_csrf_origins = os.environ.get('CSRF_TRUSTED_ORIGINS', '')
+CSRF_TRUSTED_ORIGINS = [
+    origin.strip() for origin in _csrf_origins.split(',') if origin.strip()
+]
+if _render_host:
+    _render_csrf = f"https://{_render_host}"
+    if _render_csrf not in CSRF_TRUSTED_ORIGINS:
+        CSRF_TRUSTED_ORIGINS.append(_render_csrf)
+
+# ---------------------------------------------------------------------------
+# Production Security Headers (Reverse Proxy / SSL)
+# ---------------------------------------------------------------------------
+if not DEBUG:
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    SECURE_SSL_REDIRECT = os.environ.get('SECURE_SSL_REDIRECT', 'True') == 'True'
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
