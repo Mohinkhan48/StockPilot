@@ -1,0 +1,18 @@
+# =============================================================================
+# Netlify Configuration for StockPilot Frontend (Repository Root)
+# =============================================================================
+
+[build]
+  base = "frontend"
+  publish = "dist"
+  command = "npm install && npm run build"
+
+[build.environment]
+  NODE_VERSION = "20"
+  NODE_ENV = "development"
+  NPM_FLAGS = "--include=dev"
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
