@@ -26,6 +26,7 @@ export const App: React.FC = () => {
       <AuthProvider>
         <Routes>
           {/* Public Auth Routes */}
+          <Route path="/" element={<LoginPage />} />
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />
 
@@ -59,9 +60,8 @@ export const App: React.FC = () => {
             <Route path="orders/:orderId" element={<OrderDetailPage />} />
           </Route>
 
-          {/* Root & Fallback Redirects */}
-          <Route path="/" element={<Navigate to="/workspaces" replace />} />
-          <Route path="*" element={<Navigate to="/workspaces" replace />} />
+          {/* Fallback Redirect */}
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </AuthProvider>
     </BrowserRouter>
