@@ -95,12 +95,14 @@ export const LoginPage: React.FC = () => {
           </div>
         )}
 
-        <form onSubmit={handleSubmit}>
+        <form onSubmit={handleSubmit} autoComplete="off">
           <div className="form-group">
             <label className="form-label" htmlFor="username">Username</label>
             <input
               id="username"
+              name="username"
               type="text"
+              autoComplete="off"
               className="form-input"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
@@ -114,7 +116,9 @@ export const LoginPage: React.FC = () => {
             <label className="form-label" htmlFor="password">Password</label>
             <input
               id="password"
+              name="password"
               type="password"
+              autoComplete="new-password"
               className="form-input"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
